@@ -1,0 +1,12 @@
+site_name: 't-app-01'
+site_description: 'Main documentation for the t-app-01'
+repo_url: https://github.com/backstage-demo-26/t-app-01
+edit_uri: edit/main/docs
+
+plugins:
+  - techdocs-core
+
+# For sidebar navigation on https://backstage.io/, see `microsite/sidebars.json`
+nav:
+  - Overview:
+      - Getting started: 'docs/index.md'

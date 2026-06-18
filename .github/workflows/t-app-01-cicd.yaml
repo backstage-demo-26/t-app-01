@@ -1,0 +1,106 @@
+name: t-app-01-cicd
+
+on:
+  push:
+    paths:
+      - src/**
+    branches:
+      - master
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: t-app-01
+  ORG_NAME: backstage-demo-26
+  APP_ENV: dev
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Shorten commit id
+        shell: bash
+        run: |
+          echo "COMMIT_ID=${GITHUB_SHA::6}" >> "$GITHUB_ENV"
+      -
+        name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GH_USERNAME }}
+          password: ${{ secrets.GH_TOKEN }}
+      -
+        name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.ORG_NAME }}/${{ env.IMAGE_NAME }}:${{ env.COMMIT_ID }}
+          secrets: |
+             "API_KEY=${{ secrets.API_KEY }}"
+    outputs:
+      commit_id: ${{ env.COMMIT_ID }}
+
+  cd:
+    needs: ci
+    runs-on: self-hosted
+    steps:
+
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10' # Enforces pip availability
+
+      - name: Modify values file
+        shell: bash
+        run: |
+          echo ${{needs.ci.outputs.commit_id}}
+          pip install yq
+          yq -Yi '.image.tag = "${{needs.ci.outputs.commit_id}}"' charts/t-app-01/values-dev.yaml
+
+      - name: Commit changes
+        uses: EndBug/add-and-commit@v9
+        with:
+          message: 'Updates values.yaml with commit ${{needs.ci.outputs.commit_id}}'
+
+      - name: Install argocd
+        shell: bash
+        run: |
+          curl -ksSL -o argocd https://argocd-server.argocd/download/argocd-linux-amd64
+          chmod +x argocd
+          sudo mv ./argocd /usr/local/bin/argocd
+
+      - name: argocd login
+        shell: bash
+        run: |
+          argocd login argocd-server.argocd \
+            --insecure  \
+            --grpc-web \
+            --username admin \
+            --password  ${{ secrets.ARGOCD_PASSWORD }}
+
+      - name: Ensure argocd repo and app
+        shell: bash
+        run: |
+
+          # Connects the argocd repo
+          repo="https://github.com/${{ env.ORG_NAME }}/${{ env.IMAGE_NAME }}.git"
+          argocd repo add $repo --name ${{ env.IMAGE_NAME }} --upsert
+
+          # Creates the argocd app
+          argocd app create ${{ env.IMAGE_NAME }} \
+            --repo $repo \
+            --path charts/${{ env.IMAGE_NAME }} \
+            --dest-namespace ${{ env.APP_ENV }} \
+            --dest-server https://kubernetes.default.svc \
+            --values values-dev.yaml \
+            --sync-policy manual \
+            --sync-option CreateNamespace=true \
+            --upsert
+
+      - name: Argocd app sync
+        shell: bash
+        run: |
+          argocd app sync ${{ env.IMAGE_NAME }}
+          argocd app wait ${{ env.IMAGE_NAME }} --timeout 180
